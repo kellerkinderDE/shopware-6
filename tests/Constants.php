@@ -7,8 +7,11 @@ namespace PayonePayment\Test;
 interface Constants
 {
     public const CURRENCY_ID                = '9d185b6a82224319a326a0aed4f80d0a';
+    public const CURRENCY_ISO               = 'EUR';
     public const CURRENCY_DECIMAL_PRECISION = 2;
     public const CURRENCY_TAX_RATE          = 19.00;
+
+    public const ROUNDING_INTERVAL = 1;
 
     public const ORDER_ID     = 'c23b44f2778240c7ad09bee356004503';
     public const ORDER_NUMBER = 'pp_on_1';

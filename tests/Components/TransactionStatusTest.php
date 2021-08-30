@@ -6,6 +6,7 @@ namespace PayonePayment\Test\Components;
 
 use PayonePayment\Components\TransactionStatus\TransactionStatusService;
 use PayonePayment\Components\TransactionStatus\TransactionStatusServiceInterface;
+use PayonePayment\Configuration\ConfigurationPrefixes;
 use PayonePayment\Installer\CustomFieldInstaller;
 use PayonePayment\PaymentHandler\PayoneCreditCardPaymentHandler;
 use PayonePayment\Struct\PaymentTransaction;
@@ -19,6 +20,7 @@ use Shopware\Core\Checkout\Payment\PaymentMethodEntity;
 use Shopware\Core\Checkout\Test\Cart\Common\Generator;
 use Shopware\Core\Defaults;
 use Shopware\Core\Framework\Context;
+use Shopware\Core\Framework\DataAbstractionLayer\Pricing\CashRoundingConfig;
 use Shopware\Core\Framework\Test\TestCaseBase\KernelTestBehaviour;
 use Shopware\Core\System\Currency\CurrencyEntity;
 use Shopware\Core\System\SalesChannel\SalesChannelContext;
@@ -34,7 +36,7 @@ class TransactionStatusTest extends TestCase
     /** @var TransactionStatusServiceInterface */
     private $transactionStatusService;
 
-    public function dataProvider()
+    public function dataProvider(): \Generator
     {
         yield [
             'open' => [
@@ -155,7 +157,7 @@ class TransactionStatusTest extends TestCase
     /**
      * @dataProvider dataProvider
      */
-    public function testTransactionStatusWithoutMapping(array $transactionData, string $expectedTransitionName): void
+    public function testTransactionStatusWithMethodSpecificMapping(array $transactionData, string $expectedTransitionName): void
     {
         $salesChannelContext  = $this->getSalesChannelContext();
         $paymentTransaction   = $this->getPaymentTransaction();
@@ -169,6 +171,32 @@ class TransactionStatusTest extends TestCase
             ),
             $salesChannelContext->getContext()
         );
+
+        $configuration = [
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_APPOINTED)       => StateMachineTransitionActions::ACTION_REOPEN,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_CANCELATION)     => StateMachineTransitionActions::ACTION_CANCEL,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_FAILED)          => StateMachineTransitionActions::ACTION_CANCEL,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_DEBIT)           => StateMachineTransitionActions::ACTION_REFUND,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_PARTIAL_DEBIT)   => StateMachineTransitionActions::ACTION_REFUND_PARTIALLY,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_PARTIAL_CAPTURE) => StateMachineTransitionActions::ACTION_PAID_PARTIALLY,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_CAPTURE)         => StateMachineTransitionActions::ACTION_PAID,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_PAID)            => StateMachineTransitionActions::ACTION_PAID,
+            ConfigurationPrefixes::CONFIGURATION_PREFIX_CREDITCARD . ucfirst(TransactionStatusService::STATUS_PREFIX) . ucfirst(TransactionStatusService::ACTION_COMPLETED)       => StateMachineTransitionActions::ACTION_PAID,
+        ];
+
+        $transactionStatusService = TransactionStatusWebhookHandlerFactory::createTransactionStatusService($stateMachineRegistry, $configuration, $paymentTransaction->getOrderTransaction());
+        $transactionStatusService->transitionByConfigMapping($salesChannelContext, $paymentTransaction, $transactionData);
+    }
+
+    /**
+     * @dataProvider dataProvider
+     */
+    public function testTransactionStatusWithoutMapping(array $transactionData, string $expectedTransitionName): void
+    {
+        $salesChannelContext  = $this->getSalesChannelContext();
+        $paymentTransaction   = $this->getPaymentTransaction();
+        $stateMachineRegistry = $this->createMock(StateMachineRegistry::class);
+        $stateMachineRegistry->expects($this->never())->method('transition');
 
         $transactionStatusService = TransactionStatusWebhookHandlerFactory::createTransactionStatusService($stateMachineRegistry, [], $paymentTransaction->getOrderTransaction());
         $transactionStatusService->transitionByConfigMapping($salesChannelContext, $paymentTransaction, $transactionData);
@@ -187,7 +215,24 @@ class TransactionStatusTest extends TestCase
     {
         $currencyMock = new CurrencyEntity();
         $currencyMock->setId(Constants::CURRENCY_ID);
-        $currencyMock->setDecimalPrecision(Constants::CURRENCY_DECIMAL_PRECISION);
+
+        if (method_exists($currencyMock, 'setDecimalPrecision')) {
+            $currencyMock->setDecimalPrecision(Constants::CURRENCY_DECIMAL_PRECISION);
+        } else {
+            $currencyMock->setItemRounding(
+                new CashRoundingConfig(
+                    Constants::CURRENCY_DECIMAL_PRECISION,
+                    Constants::ROUNDING_INTERVAL,
+                    true)
+            );
+
+            $currencyMock->setTotalRounding(
+                new CashRoundingConfig(
+                    Constants::CURRENCY_DECIMAL_PRECISION,
+                    Constants::ROUNDING_INTERVAL,
+                    true)
+            );
+        }
 
         $orderEntity = new OrderEntity();
         $orderEntity->setId(Constants::ORDER_ID);

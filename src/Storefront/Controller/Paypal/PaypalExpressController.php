@@ -5,23 +5,26 @@ declare(strict_types=1);
 namespace PayonePayment\Storefront\Controller\Paypal;
 
 use PayonePayment\Components\CartHasher\CartHasherInterface;
+use PayonePayment\PaymentHandler\PayonePaypalExpressPaymentHandler;
 use PayonePayment\PaymentMethod\PayonePaypalExpress;
 use PayonePayment\Payone\Client\Exception\PayoneRequestException;
 use PayonePayment\Payone\Client\PayoneClientInterface;
-use PayonePayment\Payone\Request\PaypalExpress\PaypalExpressGetCheckoutDetailsRequestFactory;
-use PayonePayment\Payone\Request\PaypalExpress\PaypalExpressSetCheckoutRequestFactory;
+use PayonePayment\Payone\RequestParameter\Builder\AbstractRequestParameterBuilder;
+use PayonePayment\Payone\RequestParameter\RequestParameterFactory;
+use PayonePayment\Payone\RequestParameter\Struct\CheckoutDetailsStruct;
 use PayonePayment\Storefront\Struct\CheckoutCartPaymentData;
 use RuntimeException;
 use Shopware\Core\Checkout\Cart\Cart;
 use Shopware\Core\Checkout\Cart\SalesChannel\CartService;
-use Shopware\Core\Checkout\Customer\SalesChannel\AccountRegistrationService;
 use Shopware\Core\Checkout\Customer\SalesChannel\AccountService;
+use Shopware\Core\Checkout\Customer\SalesChannel\RegisterRoute;
 use Shopware\Core\Framework\Context;
 use Shopware\Core\Framework\DataAbstractionLayer\EntityRepositoryInterface;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Criteria;
 use Shopware\Core\Framework\DataAbstractionLayer\Search\Filter\EqualsFilter;
 use Shopware\Core\Framework\Routing\Annotation\RouteScope;
 use Shopware\Core\Framework\Validation\DataBag\DataBag;
+use Shopware\Core\Framework\Validation\DataBag\RequestDataBag;
 use Shopware\Core\System\Country\CountryEntity;
 use Shopware\Core\System\SalesChannel\Context\SalesChannelContextFactory;
 use Shopware\Core\System\SalesChannel\Context\SalesChannelContextService;
@@ -39,20 +42,14 @@ use Throwable;
 
 class PaypalExpressController extends StorefrontController
 {
-    /** @var PaypalExpressSetCheckoutRequestFactory */
-    private $checkoutRequestFactory;
-
-    /** @var PaypalExpressGetCheckoutDetailsRequestFactory */
-    private $checkoutDetailsRequestFactory;
-
     /** @var PayoneClientInterface */
     private $client;
 
     /** @var CartService */
     private $cartService;
 
-    /** @var AccountRegistrationService */
-    private $accountRegistrationService;
+    /** @var RegisterRoute */
+    private $registerRoute;
 
     /** @var AccountService */
     private $accountService;
@@ -75,32 +72,36 @@ class PaypalExpressController extends StorefrontController
     /** @var RouterInterface */
     private $router;
 
+    /** @var RequestParameterFactory */
+    private $requestParameterFactory;
+
+    /**
+     * @param SalesChannelContextFactory $salesChannelContextFactory
+     */
     public function __construct(
-        PaypalExpressSetCheckoutRequestFactory $checkoutRequestFactory,
-        PaypalExpressGetCheckoutDetailsRequestFactory $checkoutDetailsRequestFactory,
         PayoneClientInterface $client,
         CartService $cartService,
-        AccountRegistrationService $accountRegistrationService,
+        RegisterRoute $registerRoute,
         AccountService $accountService,
-        SalesChannelContextFactory $salesChannelContextFactory,
+        $salesChannelContextFactory,
         EntityRepositoryInterface $salutationRepository,
         EntityRepositoryInterface $countryRepository,
         SalesChannelContextSwitcher $salesChannelContextSwitcher,
         CartHasherInterface $cartHasher,
-        RouterInterface $router
+        RouterInterface $router,
+        RequestParameterFactory $requestParameterFactory
     ) {
-        $this->checkoutRequestFactory        = $checkoutRequestFactory;
-        $this->checkoutDetailsRequestFactory = $checkoutDetailsRequestFactory;
-        $this->client                        = $client;
-        $this->cartService                   = $cartService;
-        $this->accountRegistrationService    = $accountRegistrationService;
-        $this->accountService                = $accountService;
-        $this->salesChannelContextFactory    = $salesChannelContextFactory;
-        $this->salutationRepository          = $salutationRepository;
-        $this->countryRepository             = $countryRepository;
-        $this->salesChannelContextSwitcher   = $salesChannelContextSwitcher;
-        $this->cartHasher                    = $cartHasher;
-        $this->router                        = $router;
+        $this->client                      = $client;
+        $this->cartService                 = $cartService;
+        $this->registerRoute               = $registerRoute;
+        $this->accountService              = $accountService;
+        $this->salesChannelContextFactory  = $salesChannelContextFactory;
+        $this->salutationRepository        = $salutationRepository;
+        $this->countryRepository           = $countryRepository;
+        $this->salesChannelContextSwitcher = $salesChannelContextSwitcher;
+        $this->cartHasher                  = $cartHasher;
+        $this->router                      = $router;
+        $this->requestParameterFactory     = $requestParameterFactory;
     }
 
     /**
@@ -123,10 +124,14 @@ class PaypalExpressController extends StorefrontController
             ]);
         }
 
-        $setRequest = $this->checkoutRequestFactory->getRequestParameters(
-            $cart,
-            $context,
-            $this->generateReturnUrl()
+        $setRequest = $this->requestParameterFactory->getRequestParameter(
+            new CheckoutDetailsStruct(
+                $cart,
+                $context,
+                PayonePaypalExpressPaymentHandler::class,
+                AbstractRequestParameterBuilder::REQUEST_ACTION_SET_EXPRESS_CHECKOUT,
+                $this->generateReturnUrl()
+            )
         );
 
         try {
@@ -161,8 +166,16 @@ class PaypalExpressController extends StorefrontController
             throw new RuntimeException($this->trans('PayonePayment.errorMessages.genericError'));
         }
 
-        $workOrderId = $cartExtension->getWorkorderId();
-        $getRequest  = $this->checkoutDetailsRequestFactory->getRequestParameters($cart, $context, $workOrderId);
+        $getRequest = $this->requestParameterFactory->getRequestParameter(
+            new CheckoutDetailsStruct(
+                $cart,
+                $context,
+                PayonePaypalExpressPaymentHandler::class,
+                AbstractRequestParameterBuilder::REQUEST_ACTION_GET_EXPRESS_CHECKOUT_DETAILS,
+                '',
+                $cartExtension->getWorkorderId()
+            )
+        );
 
         try {
             $response = $this->client->request($getRequest);
@@ -174,9 +187,10 @@ class PaypalExpressController extends StorefrontController
             throw new RuntimeException($this->trans('PayonePayment.errorMessages.genericError'));
         }
 
-        $customerDataBag = $this->getCustomerDataBagFromResponse($response, $context->getContext());
-        $customerId      = $this->accountRegistrationService->register($customerDataBag, true, $context);
-        $newContextToken = $this->accountService->login($response['addpaydata']['email'], $context, true);
+        $customerDataBag  = $this->getCustomerDataBagFromResponse($response, $context->getContext());
+        $customerResponse = $this->registerRoute->register($customerDataBag, $context, false);
+        $customerId       = $customerResponse->getCustomer()->getId();
+        $newContextToken  = $this->accountService->login($response['addpaydata']['email'], $context, true);
 
         $newContext = $this->salesChannelContextFactory->create(
             $newContextToken,
@@ -220,12 +234,13 @@ class PaypalExpressController extends StorefrontController
         return $this->router->generate('frontend.account.payone.paypal.express-checkout-handler', [], UrlGeneratorInterface::ABSOLUTE_URL);
     }
 
-    private function getCustomerDataBagFromResponse(array $response, Context $context): DataBag
+    private function getCustomerDataBagFromResponse(array $response, Context $context): RequestDataBag
     {
         $salutationId = $this->getSalutationId($context);
         $countryId    = $this->getCountryIdByCode($response['addpaydata']['shipping_country'], $context);
 
-        return new DataBag([
+        return new RequestDataBag([
+            'guest'          => true,
             'salutationId'   => $salutationId,
             'email'          => $response['addpaydata']['email'],
             'firstName'      => $response['addpaydata']['shipping_firstname'],

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace PayonePayment\Storefront\Controller\Account;
 
-use PayonePayment\Components\CardRepository\CardRepositoryInterface;
+use PayonePayment\StoreApi\Route\AbstractCardRoute;
 use PayonePayment\Storefront\Page\Card\AccountCardPageLoader;
 use Shopware\Core\Framework\Routing\Annotation\RouteScope;
 use Shopware\Core\System\SalesChannel\SalesChannelContext;
@@ -20,13 +20,13 @@ class AccountCardController extends StorefrontController
     /** @var AccountCardPageLoader */
     private $accountCardPageLoader;
 
-    /** @var CardRepositoryInterface */
-    private $cardRepository;
+    /** @var AbstractCardRoute */
+    private $cardRoute;
 
-    public function __construct(AccountCardPageLoader $accountCardPageLoader, CardRepositoryInterface $cardRepository)
+    public function __construct(AccountCardPageLoader $accountCardPageLoader, AbstractCardRoute $cardRoute)
     {
         $this->accountCardPageLoader = $accountCardPageLoader;
-        $this->cardRepository        = $cardRepository;
+        $this->cardRoute             = $cardRoute;
     }
 
     /**
@@ -35,8 +35,6 @@ class AccountCardController extends StorefrontController
      */
     public function cardOverview(Request $request, SalesChannelContext $context): Response
     {
-        $this->denyAccessUnlessLoggedIn();
-
         $page = $this->accountCardPageLoader->load($request, $context);
 
         return $this->renderStorefront('@Storefront/storefront/payone/account/card.html.twig', ['page' => $page]);
@@ -48,16 +46,8 @@ class AccountCardController extends StorefrontController
      */
     public function deleteCard(Request $request, SalesChannelContext $context): Response
     {
-        $this->denyAccessUnlessLoggedIn();
-
         try {
-            if (null !== $context->getCustomer()) {
-                $this->cardRepository->removeCard(
-                    $context->getCustomer(),
-                    $request->get('pseudoCardPan'),
-                    $context->getContext()
-                );
-            }
+            $this->cardRoute->delete($request->get('pseudoCardPan'), $context);
         } catch (Throwable $exception) {
             $this->addFlash('danger', $this->trans('PayonePayment.cardPage.error'));
 

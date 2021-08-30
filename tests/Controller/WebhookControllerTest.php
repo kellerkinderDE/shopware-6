@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PayonePayment\Test\Controller;
 
 use PayonePayment\Components\DataHandler\Transaction\TransactionDataHandlerInterface;
+use PayonePayment\Components\TransactionStatus\TransactionStatusService;
 use PayonePayment\Controller\WebhookController;
 use PayonePayment\Installer\CustomFieldInstaller;
 use PayonePayment\PaymentHandler\PayoneCreditCardPaymentHandler;
@@ -23,6 +24,7 @@ use Shopware\Core\Checkout\Payment\PaymentMethodEntity;
 use Shopware\Core\Checkout\Test\Cart\Common\Generator;
 use Shopware\Core\Defaults;
 use Shopware\Core\Framework\Context;
+use Shopware\Core\Framework\DataAbstractionLayer\Pricing\CashRoundingConfig;
 use Shopware\Core\System\Currency\CurrencyEntity;
 use Shopware\Core\System\StateMachine\Aggregation\StateMachineState\StateMachineStateEntity;
 use Shopware\Core\System\StateMachine\Aggregation\StateMachineTransition\StateMachineTransitionActions;
@@ -134,7 +136,24 @@ class WebhookControllerTest extends TestCase
 
         $currency = new CurrencyEntity();
         $currency->setId(Constants::CURRENCY_ID);
-        $currency->setDecimalPrecision(2);
+
+        if (method_exists($currency, 'setDecimalPrecision')) {
+            $currency->setDecimalPrecision(Constants::CURRENCY_DECIMAL_PRECISION);
+        } else {
+            $currency->setItemRounding(
+                new CashRoundingConfig(
+                    Constants::CURRENCY_DECIMAL_PRECISION,
+                    Constants::ROUNDING_INTERVAL,
+                    true)
+            );
+
+            $currency->setTotalRounding(
+                new CashRoundingConfig(
+                Constants::CURRENCY_DECIMAL_PRECISION,
+                Constants::ROUNDING_INTERVAL,
+                true)
+            );
+        }
 
         $orderTransactionEntity = new OrderTransactionEntity();
         $orderTransactionEntity->setId(Constants::ORDER_TRANSACTION_ID);
@@ -164,9 +183,21 @@ class WebhookControllerTest extends TestCase
         $stateMachineState->setTechnicalName('');
         $orderTransactionEntity->setStateMachineState($stateMachineState);
 
+        $configuration = [
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_APPOINTED)       => StateMachineTransitionActions::ACTION_REOPEN,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_CANCELATION)     => StateMachineTransitionActions::ACTION_CANCEL,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_FAILED)          => StateMachineTransitionActions::ACTION_CANCEL,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_DEBIT)           => StateMachineTransitionActions::ACTION_REFUND,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_PARTIAL_DEBIT)   => StateMachineTransitionActions::ACTION_REFUND_PARTIALLY,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_PARTIAL_CAPTURE) => StateMachineTransitionActions::ACTION_PAID_PARTIALLY,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_CAPTURE)         => StateMachineTransitionActions::ACTION_PAID,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_PAID)            => StateMachineTransitionActions::ACTION_PAID,
+            TransactionStatusService::STATUS_PREFIX . ucfirst(TransactionStatusService::ACTION_COMPLETED)       => StateMachineTransitionActions::ACTION_PAID,
+        ];
+
         $transactionStatusService = TransactionStatusWebhookHandlerFactory::createTransactionStatusService(
             $stateMachineRegistry,
-            [],
+            $configuration,
             $orderTransactionEntity
         );
 
